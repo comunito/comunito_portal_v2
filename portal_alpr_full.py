@@ -10,6 +10,11 @@ import socket
 from urllib.parse import urlparse
 import ipaddress
 
+# Limitar hilos de librerías matemáticas ANTES de que cualquier thread los herede
+os.environ.setdefault("OMP_NUM_THREADS", "2")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "2")
+
 try:
     import serial
 except Exception:
@@ -596,6 +601,12 @@ class VideoSource:
                 if not cap or not cap.isOpened():
                     time.sleep(0.6); continue
 
+                # ── Zero-Latency Buffer: entregar siempre el frame más reciente ──
+                try:
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                except Exception:
+                    pass
+
                 last=time.time()
                 while self.running:
                     ok, fr = cap.read()
@@ -744,6 +755,41 @@ def _preprocess_for_alpr(cam:int, frame_bgr):
         h, w = frame_bgr.shape[:2]
         if h < 20 or w < 20:
             return frame_bgr
+
+        if prof == "adaptive_auto":
+            # ── Fotómetro por software: decide automaticamente si hace falta boost ──
+            try:
+                g = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+            except Exception:
+                g = frame_bgr if len(frame_bgr.shape)==2 else frame_bgr
+
+            mean_lum = float(np.mean(g))
+
+            if mean_lum < 80:  # Condición nocturna / tormentosa
+                try:
+                    g = cv2.bilateralFilter(g, 9, 75, 75)
+                    table = np.array([((i / 255.0) ** (1.0 / 0.8)) * 255
+                                      for i in np.arange(0, 256)]).astype("uint8")
+                    g = cv2.LUT(g, table)
+                    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+                    g = clahe.apply(g)
+                    blur = cv2.GaussianBlur(g, (0, 0), 2.0)
+                    g = cv2.addWeighted(g, 1.5, blur, -0.5, 0)
+                except Exception:
+                    pass
+            else:  # Condición diurna: sólo nitidez suave
+                try:
+                    clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))
+                    g = clahe.apply(g)
+                    blur = cv2.GaussianBlur(g, (0, 0), 1.0)
+                    g = cv2.addWeighted(g, 1.3, blur, -0.3, 0)
+                except Exception:
+                    pass
+
+            try:
+                return cv2.cvtColor(g, cv2.COLOR_GRAY2BGR)
+            except Exception:
+                return frame_bgr
 
         if prof == "darkfighter":
             try:
@@ -2165,6 +2211,7 @@ SETTINGS_CAM = """
     <label>Perfil<br>
       <select name="pp_profile">
         <option value="none" {{'selected' if c.pp_profile=='none' else ''}}>none (sin cambios)</option>
+        <option value="adaptive_auto" {{'selected' if c.pp_profile=='adaptive_auto' else ''}}>🔄 Adaptativo Día/Noche (recomendado)</option>
         <option value="bw_hicontrast_sharp" {{'selected' if c.pp_profile=='bw_hicontrast_sharp' else ''}}>B/N alto contraste + nitidez</option>
         <option value="darkfighter" {{'selected' if c.pp_profile=='darkfighter' else ''}}>Darkfighter (Bilateral+CLAHE+Gamma)</option>
       </select>
@@ -2494,7 +2541,7 @@ def settings_cam(cam:int):
         # Pre-procesado (solo ALPR)
         c["pp_enabled"]=bool(request.form.get("pp_enabled"))
         c["pp_profile"]=(request.form.get("pp_profile", c.get("pp_profile","none")) or "none").strip().lower()
-        if c["pp_profile"] not in ("none","bw_hicontrast_sharp","darkfighter"):
+        if c["pp_profile"] not in ("none","bw_hicontrast_sharp","darkfighter","adaptive_auto"):
             c["pp_profile"]="none"
         c["pp_clahe_clip"]=_clampf(request.form.get("pp_clahe_clip", c.get("pp_clahe_clip",2.0)), 1.0, 4.0, c.get("pp_clahe_clip",2.0))
         c["pp_sharp_strength"]=_clampf(request.form.get("pp_sharp_strength", c.get("pp_sharp_strength",0.55)), 0.0, 1.2, c.get("pp_sharp_strength",0.55))
@@ -3071,8 +3118,6 @@ threading.Thread(target=_heartbeat_scheduler_loop, daemon=True).start()
 
 if __name__=="__main__":
     os.environ["TZ"]="America/Mexico_City"
-    os.environ["OMP_NUM_THREADS"]="2"
-    os.environ["OPENBLAS_NUM_THREADS"]="1"
     try:
         from waitress import serve
         serve(app, host="0.0.0.0", port=5000, threads=8)
