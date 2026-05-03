@@ -1,8 +1,8 @@
 [Unit]
 Description=Comunito Portal
-After=network-online.target
-Wants=network-online.target
+After=network.target
 StartLimitIntervalSec=0
+TimeoutStartSec=0
 
 [Service]
 User=pi

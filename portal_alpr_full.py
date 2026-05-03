@@ -551,6 +551,10 @@ class VideoSource:
         with self.lock:
             return self.frame
 
+    def get_with_ts(self):
+        with self.lock:
+            return self.frame, self.ts
+
     def _open_cv(self, url): return cv2.VideoCapture(url)
 
     def _open_gst(self, url):
@@ -1134,12 +1138,12 @@ def enqueue_webhooks(cam:int, cat:str, pair:dict, usuario:str, dispositivo:str, 
 # ========== Motion + ROI ==========
 class MotionState:
     def __init__(self):
-        self.baseline=None
-        self.last_base_ts=0.0
+        self.bg_subtractor=None
         self.active=False
         self.last_motion_ts=0.0
         self.trigger=threading.Event()
         self.last_ratio=0.0
+        self.last_frame_ts=0.0
 
 motion=[MotionState(), MotionState()]
 
@@ -1172,66 +1176,56 @@ def _roi_gray_small(cam:int, frame):
             g=cv2.resize(g, (tw, th), interpolation=cv2.INTER_AREA)
     return g
 
-def _build_baseline(cam:int):
-    c=cfg["cameras"][cam-1]["motion"]
-    n=int(c.get("autobase_samples",3)); dt=float(c.get("autobase_interval_s",1.0))
-    samples=[]
-    for _ in range(max(1,n)):
-        fr=grab[cam-1].get()
-        if fr is not None:
-            g=_roi_gray_small(cam, fr)
-            if g is not None: samples.append(g)
-        time.sleep(dt)
-    if not samples: return None
-    min_h=min(s.shape[0] for s in samples); min_w=min(s.shape[1] for s in samples)
-    stack=np.stack([s[:min_h,:min_w] for s in samples], axis=0)
-    base=np.median(stack, axis=0).astype(np.uint8)
-    motion[cam-1].baseline=base; motion[cam-1].last_base_ts=time.time()
-    return base
-
 def _motion_ratio(cam:int, gray)->float:
-    st=motion[cam-1]; base=st.baseline
-    if base is None: return 0.0
-    h=min(gray.shape[0], base.shape[0]); w=min(gray.shape[1], base.shape[1])
-    if h<8 or w<8: return 0.0
-    a=gray[:h,:w]; b=base[:h,:w]
-    d=cv2.absdiff(a,b)
-    thr=int(cfg["cameras"][cam-1]["motion"].get("intensity_delta",25))
-    _,bw=cv2.threshold(d, thr, 255, cv2.THRESH_BINARY)
-    changed=int(np.count_nonzero(bw)); total=bw.size
-    return (100.0*changed/float(total))
+    st=motion[cam-1]
+    if st.bg_subtractor is None:
+        thr=int(cfg["cameras"][cam-1]["motion"].get("intensity_delta",25))
+        st.bg_subtractor = cv2.createBackgroundSubtractorMOG2(history=300, varThreshold=thr, detectShadows=False)
+    
+    fg_mask = st.bg_subtractor.apply(gray)
+    total = fg_mask.size
+    if total == 0: return 0.0
+    
+    changed = int(np.count_nonzero(fg_mask > 127))
+    return (100.0 * changed / float(total))
 
 def _motion_loop(cam:int):
     c=cfg["cameras"][cam-1]["motion"]
-    period_base=float(max(1, c.get("autobase_every_min",10)))*60.0
     cooldown=float(max(0.2, c.get("cooldown_s",2.0)))
     last_check=0.0
-    _build_baseline(cam)
     while True:
         try:
             if not cfg["cameras"][cam-1]["motion"].get("enabled",True):
                 motion[cam-1].active=True; time.sleep(0.2); continue
-            fr=grab[cam-1].get()
-            if fr is None: time.sleep(0.05); continue
+            
+            fr, ts = grab[cam-1].get_with_ts()
+            if fr is None or ts == motion[cam-1].last_frame_ts:
+                time.sleep(0.02); continue
+            
+            motion[cam-1].last_frame_ts = ts
             now=time.time()
-            if (motion[cam-1].baseline is None) or ((now - motion[cam-1].last_base_ts) >= period_base):
-                _build_baseline(cam); time.sleep(0.1); continue
+            
             if now - last_check < 0.05: time.sleep(0.02); continue
             last_check=now
+            
             g=_roi_gray_small(cam, fr)
             if g is None: time.sleep(0.02); continue
+            
             ratio=_motion_ratio(cam, g)
             motion[cam-1].last_ratio=ratio
             umbral=float(cfg["cameras"][cam-1]["motion"].get("pixel_change_pct",2.0))
             prev_active=motion[cam-1].active
+            
             if ratio >= umbral:
                 motion[cam-1].active=True; motion[cam-1].last_motion_ts=now
                 if not prev_active: motion[cam-1].trigger.set()
             else:
                 if (now - motion[cam-1].last_motion_ts) >= cooldown:
                     motion[cam-1].active=False
+            
             time.sleep(0.02)
-        except Exception:
+        except Exception as e:
+            print(f"[_motion_loop][cam{cam}] error: {e}")
             time.sleep(0.2)
 
 # ========== Auto-refresh WL ==========
@@ -1526,12 +1520,14 @@ _last_auth_ts=[0.0,0.0]
 
 def _alpr_loop(cam:int):
     k=0
+    last_frame_ts=0.0
     while True:
         try:
-            fr=grab[cam-1].get()
-            if fr is None:
+            fr, ts = grab[cam-1].get_with_ts()
+            if fr is None or ts == last_frame_ts:
                 time.sleep(0.02)
                 continue
+            last_frame_ts = ts
 
             cdict=cfg["cameras"][cam-1]
             mot=motion[cam-1]
@@ -1565,7 +1561,7 @@ def _alpr_loop(cam:int):
             if not results:
                 _stable_state[cam-1]["last"]=""
                 _stable_state[cam-1]["hits"]=0
-                time.sleep(0.01)
+                time.sleep(0.1)
                 continue
 
             text, conf, det_conf = results[0]
@@ -1573,13 +1569,13 @@ def _alpr_loop(cam:int):
             if det_conf < float(cdict.get("det_min_confidence",0.80)):
                 _stable_state[cam-1]["last"]=""
                 _stable_state[cam-1]["hits"]=0
-                time.sleep(0.01)
+                time.sleep(0.05)
                 continue
 
             if conf < float(cdict.get("min_confidence",0.9)):
                 _stable_state[cam-1]["last"]=""
                 _stable_state[cam-1]["hits"]=0
-                time.sleep(0.01)
+                time.sleep(0.05)
                 continue
 
             key = canon_plate(text)
