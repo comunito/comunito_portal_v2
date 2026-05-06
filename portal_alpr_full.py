@@ -1777,6 +1777,7 @@ HOME = """
       • Cola: <b id="q{{cam}}">—</b></div>
     {% endfor %}
     <div style="flex:1"></div>
+    <a class="btn" href="/wifi" style="margin-right:8px;background:#17a2b8;color:#fff;text-decoration:none">📡 WiFi</a>
     <a class="btn" href="/settings">⚙️ Settings</a>
   </div>
 </div>
@@ -3148,6 +3149,16 @@ WIFI_HTML = """<!doctype html><meta charset="utf-8">
   
   <div id="status" class="msg"></div>
   <div id="list" style="margin-top:20px"></div>
+  
+  <div style="margin-top:30px;padding-top:20px;border-top:1px solid #eee">
+    <h3 style="margin-top:0">Agregar Red Manualmente</h3>
+    <p style="font-size:14px;color:#666">Usa esta opción para configurar una red oculta o una red que no aparece en el escaneo (ej. la red del cliente final donde se instalará el equipo).</p>
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <input type="text" id="manual_ssid" placeholder="Nombre de la red (SSID)" style="padding:10px;border:1px solid #ccc;border-radius:6px;flex:1;min-width:150px">
+      <input type="password" id="manual_pw" placeholder="Contraseña (opcional)" style="padding:10px;border:1px solid #ccc;border-radius:6px;flex:1;min-width:150px">
+      <button class="btn" onclick="connectManual()">Guardar y Conectar</button>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -3214,6 +3225,36 @@ async function connect(ssid, id){
       pwEl.value = '';
     } else {
       showMsg("Error al conectar: " + (data.error || "Revisa la contraseña"), false);
+    }
+  } catch(e) {
+    showMsg("Error de red: " + e.message, false);
+  }
+}
+
+async function connectManual(){
+  const ssid = document.getElementById('manual_ssid').value.trim();
+  if(!ssid){
+    showMsg("Ingresa el nombre de la red (SSID)", false);
+    return;
+  }
+  const pw = document.getElementById('manual_pw').value;
+  showMsg("Guardando perfil para '" + ssid + "'...", false);
+  
+  try {
+    const r = await fetch('/api/wifi/connect', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ssid: ssid, password: pw})
+    });
+    const data = await r.json();
+    if(data.ok){
+      showMsg("¡Red " + ssid + " guardada exitosamente!", true);
+      document.getElementById('manual_ssid').value = '';
+      document.getElementById('manual_pw').value = '';
+    } else {
+      showMsg("Atención: " + (data.error || "Fallo al configurar"), false);
+      // Even if nmcli fails (e.g. out of range), the profile MIGHT have been created, 
+      // but nmcli connect fails when out of range. That's fine for our use case.
     }
   } catch(e) {
     showMsg("Error de red: " + e.message, false);
