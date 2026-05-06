@@ -1746,21 +1746,24 @@ def _check_token():
 
 # ========== UI ==========
 HOME = """
-<style>
- body{font-family:system-ui;margin:16px;background:#fafafa}
- h1{margin:0 0 8px}
- .net{font-size:13px;color:#444;margin-bottom:10px}
- .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:12px}
- .card{border:1px solid #ddd;border-radius:14px;padding:12px;background:#fff}
- .plate{font-size:36px;font-weight:800;border:2px solid #111;border-radius:12px;padding:4px 10px;background:#fff;display:inline-block;min-width:220px;text-align:center}
- .tag{font-size:24px;font-weight:700;border:2px dashed #333;border-radius:12px;padding:4px 10px;background:#f7f7f7;display:inline-block;min-width:220px;text-align:center}
- .muted{color:#666;font-size:12px} .hit{color:#0a0;font-weight:700} .miss{color:#a00;font-weight:700}
- .ok{color:#2e7d32} .bad{color:#c62828} .btn{padding:7px 11px;border:1px solid #888;border-radius:10px;background:#f5f5f5;cursor:pointer}
- .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin:0 6px;vertical-align:middle}
- .on{background:#28a745}.off{background:#999}
- .row{display:flex;gap:10px;flex-wrap:wrap}
- .k{font-weight:600}
-</style>
+ <style>
+ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;margin:24px;background:#f8fafc;color:#1e293b}
+ h1{margin:0 0 12px;font-weight:800;letter-spacing:-0.5px;color:#0f172a;font-size:26px}
+ .net{font-size:13px;color:#64748b;margin-bottom:20px;background:#fff;padding:10px 16px;border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,0.05);display:inline-block;border:1px solid #e2e8f0}
+ .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:20px}
+ .card{border:1px solid #e2e8f0;border-radius:16px;padding:24px;background:#fff;box-shadow:0 4px 6px -1px rgba(0,0,0,0.05), 0 2px 4px -1px rgba(0,0,0,0.03)}
+ .card h3{margin:0 0 16px 0;font-size:18px;color:#0f172a;border-bottom:1px solid #f1f5f9;padding-bottom:12px}
+ .plate{font-family:"SF Mono",ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:46px;font-weight:800;border:3px solid #0f172a;border-radius:12px;padding:8px 16px;background:#fff;display:inline-block;min-width:240px;text-align:center;box-shadow:inset 0 2px 4px rgba(0,0,0,0.05), 0 4px 6px rgba(0,0,0,0.05);letter-spacing:2px;color:#0f172a;margin-bottom:6px}
+ .tag{font-family:"SF Mono",ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:24px;font-weight:700;border:2px dashed #cbd5e1;border-radius:12px;padding:8px 16px;background:#f8fafc;display:inline-block;min-width:240px;text-align:center;color:#64748b;margin-bottom:6px}
+ .muted{color:#64748b;font-size:12px} .hit{color:#10b981;font-weight:700} .miss{color:#ef4444;font-weight:700}
+ .ok{color:#10b981;font-weight:600} .bad{color:#ef4444;font-weight:600} 
+ .btn{padding:8px 14px;border:none;border-radius:8px;background:#f1f5f9;cursor:pointer;font-weight:600;font-size:13px;color:#334155;transition:all 0.2s;text-decoration:none;display:inline-flex;align-items:center;justify-content:center}
+ .btn:hover{background:#e2e8f0;transform:translateY(-1px)}
+ .dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin:0 6px;vertical-align:middle;box-shadow:0 0 0 2px #fff}
+ .on{background:#10b981;box-shadow:0 0 0 2px #fff, 0 0 8px #10b981}.off{background:#cbd5e1}
+ .row{display:flex;gap:16px;flex-wrap:wrap;align-items:center}
+ .k{font-weight:700;text-transform:uppercase;font-size:11px;letter-spacing:0.5px;color:#94a3b8;margin-bottom:6px}
+ </style>
 <h1>{{title}}</h1>
 <div class="net">
   Wi-Fi: <b id="net_ssid">—</b> • Señal: <b id="net_sig">—</b>% • IP: <b id="net_ip">—</b>
