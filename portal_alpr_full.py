@@ -1423,13 +1423,28 @@ def _heartbeat_payload():
         camd = OrderedDict()
         camd["cam"] = cam
 
-        # LAN (solo si modo MAC)
+        # LAN (status real basado en URL materializada)
         try:
+            url, mip, mmode = materialize_url(c)
             ip = None
             ok = False
-            if (c.get("camera_mode","mac")=="mac") and (c.get("camera_mac","") or "").strip():
-                ip = resolve_ip_by_mac(c.get("camera_mac",""))
-                ok = bool(ip) and _ping(ip,1)
+            # Si la URL tiene una IP explícita, probamos ping/tcp
+            if "{CAM_IP}" not in (url or ""):
+                if mip:
+                    ip = mip
+                else:
+                    # Extraer IP de la URL a la brava
+                    try: ip = url.split("@")[1].split(":")[0]
+                    except Exception: ip = None
+                
+                if ip:
+                    # check TCP 554
+                    try:
+                        with socket.create_connection((ip, 554), timeout=0.6):
+                            ok = True
+                    except Exception:
+                        ok = _ping(ip, 1)
+            
             camd["lan_ok"] = bool(ok)
             camd["lan_ip"] = (ip or "")
         except Exception:
@@ -2734,26 +2749,18 @@ def api_lan():
     out={}
     for cam in (1,2):
         c=cfg["cameras"][cam-1]
-        mode=(c.get("camera_mode","mac") or "mac").lower()
-
-        if mode=="mac":
-            mac=(c.get("camera_mac","") or "").strip()
-            if not mac:
-                out[f"cam{cam}"]={"ok":False,"ip":"","host":"","mode":"mac","port":554,"tcp":False}
-                continue
-            ip=resolve_ip_by_mac(mac)
-            tcp=_tcp_ok(ip, 554, timeout=0.6) if ip else False
-            ok = tcp or (bool(ip) and _ping(ip,1))
-            out[f"cam{cam}"]={"ok":ok,"ip":(ip or ""),"host":"","mode":"mac","port":554,"tcp":tcp}
+        url, mip, mmode = materialize_url(c)
+        
+        if "{CAM_IP}" in (url or ""):
+            # Sigue sin resolver MAC
+            out[f"cam{cam}"]={"ok":False,"ip":"","host":"","mode":mmode,"port":554,"tcp":False}
             continue
-
-        # manual
-        url=(c.get("camera_url","") or "").strip()
+            
         host, port = _extract_host_port(url)
         ip=_resolve_host(host) if host else ""
         tcp=_tcp_ok(ip, port, timeout=0.6) if ip else False
         ok = tcp or (bool(ip) and _ping(ip,1))
-        out[f"cam{cam}"]={"ok":ok,"ip":(ip or ""),"host":(host or ""),"mode":"manual","port":int(port or 554),"tcp":tcp}
+        out[f"cam{cam}"]={"ok":ok,"ip":(ip or ""),"host":(host or ""),"mode":mmode,"port":int(port or 554),"tcp":tcp}
 
     return jsonify(out)
 
@@ -3107,6 +3114,158 @@ def healthz():
     ok1=grab[0].get() is not None
     ok2=grab[1].get() is not None
     return (f"CAM1:{'OK' if ok1 else 'NO'} CAM2:{'OK' if ok2 else 'NO'}", (200 if (ok1 or ok2) else 503))
+
+# ========== WiFi Manager ==========
+WIFI_HTML = """<!doctype html><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WiFi Manager</title>
+<style>
+ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;margin:0;padding:20px;background:#f5f6fa;color:#333}
+ .card{background:#fff;border-radius:12px;padding:20px;max-width:600px;margin:0 auto;box-shadow:0 2px 8px rgba(0,0,0,0.1)}
+ h2{margin-top:0;font-weight:600;color:#111}
+ p{line-height:1.5;color:#555}
+ .row{display:flex;justify-content:space-between;padding:12px 0;border-bottom:1px solid #eee;align-items:center;flex-wrap:wrap;gap:10px}
+ .row:last-child{border-bottom:none}
+ .btn{padding:10px 18px;background:#007bff;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:14px;transition:0.2s}
+ .btn:hover{background:#0056b3}
+ .btn:disabled{background:#ccc;cursor:not-allowed}
+ input[type="password"]{padding:10px;border:1px solid #ccc;border-radius:6px;width:150px;font-size:14px}
+ .msg{margin-top:15px;color:#d9534f;font-weight:bold;padding:10px;border-radius:6px;background:#fdf2f2;display:none}
+ .msg.active{display:block}
+ .msg.ok{color:#155724;background:#d4edda}
+ .controls{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px}
+ .controls a.btn{background:#6c757d;text-decoration:none;display:inline-block}
+ .controls a.btn:hover{background:#5a6268}
+</style>
+<div class="card">
+  <h2>📡 Gestor de Redes WiFi</h2>
+  <p>Escanea y conecta la Raspberry Pi a redes inalámbricas. Las redes guardadas se recordarán automáticamente en el futuro, ideal para configurarla en el laboratorio antes de instalar en campo.</p>
+  
+  <div class="controls">
+    <button class="btn" id="scanBtn" onclick="scan()">🔄 Escanear Redes</button>
+    <a class="btn" href="/">⬅ Volver al Portal</a>
+  </div>
+  
+  <div id="status" class="msg"></div>
+  <div id="list" style="margin-top:20px"></div>
+</div>
+
+<script>
+function showMsg(txt, isOk=false) {
+  const el = document.getElementById('status');
+  el.textContent = txt;
+  el.className = 'msg active ' + (isOk ? 'ok' : '');
+}
+
+async function scan(){
+  const btn = document.getElementById('scanBtn');
+  const lst = document.getElementById('list');
+  btn.disabled = true;
+  showMsg("Escaneando redes (puede tardar unos segundos)...");
+  lst.innerHTML = "";
+  
+  try {
+    const r = await fetch('/api/wifi/scan');
+    const data = await r.json();
+    if(!data.ok) throw new Error(data.error);
+    
+    if(data.networks.length === 0){
+      showMsg("No se encontraron redes WiFi cercanas.", false);
+    } else {
+      document.getElementById('status').className = "msg"; // Hide msg
+      data.networks.forEach(nw => {
+        if(!nw.ssid) return;
+        const row = document.createElement('div');
+        row.className = "row";
+        row.innerHTML = `
+          <div style="flex:1;min-width:200px">
+            <strong style="font-size:16px;color:#000">${nw.ssid}</strong><br>
+            <small style="color:#666">📶 Señal: ${nw.signal}% &nbsp;•&nbsp; 🔒 Seg: ${nw.security}</small>
+          </div>
+          <div style="display:flex;gap:8px">
+            <input type="password" id="pw_${btoa(nw.ssid).replace(/=/g,'')}" placeholder="Contraseña">
+            <button class="btn" onclick="connect('${nw.ssid}', '${btoa(nw.ssid).replace(/=/g,'')}')">Conectar</button>
+          </div>
+        `;
+        lst.appendChild(row);
+      });
+    }
+  } catch(e) {
+    showMsg("Error: " + e.message, false);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function connect(ssid, id){
+  const pwEl = document.getElementById('pw_'+id);
+  const pw = pwEl.value;
+  showMsg("Conectando a '" + ssid + "'... Esto puede demorar.", false);
+  
+  try {
+    const r = await fetch('/api/wifi/connect', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ssid: ssid, password: pw})
+    });
+    const data = await r.json();
+    if(data.ok){
+      showMsg("¡Conectado exitosamente a " + ssid + "!", true);
+      pwEl.value = '';
+    } else {
+      showMsg("Error al conectar: " + (data.error || "Revisa la contraseña"), false);
+    }
+  } catch(e) {
+    showMsg("Error de red: " + e.message, false);
+  }
+}
+</script>
+"""
+
+@app.route("/wifi")
+def wifi_page():
+    return render_template_string(WIFI_HTML)
+
+@app.route("/api/wifi/scan")
+def api_wifi_scan():
+    code, out = sh("nmcli -t -f SSID,SIGNAL,SECURITY dev wifi list")
+    if code != 0:
+        return jsonify({"ok":False, "error": out})
+    seen = set()
+    nets = []
+    for line in out.splitlines():
+        parts = line.split(":")
+        if len(parts) >= 3:
+            ssid = parts[0].strip()
+            # ignorar redes ocultas o ya vistas
+            if not ssid or ssid in seen or ssid.startswith("--"): 
+                continue
+            seen.add(ssid)
+            nets.append({
+                "ssid": ssid,
+                "signal": parts[1].strip(),
+                "security": parts[2].strip()
+            })
+    return jsonify({"ok":True, "networks": nets})
+
+@app.route("/api/wifi/connect", methods=["POST"])
+def api_wifi_connect():
+    data = request.get_json() or {}
+    ssid = data.get("ssid", "").replace("'", "")
+    pw = data.get("password", "").replace("'", "")
+    if not ssid:
+        return jsonify({"ok":False, "error":"SSID vacío"})
+    
+    # Intenta borrar conexión previa para evitar conflictos si cambió la clave
+    sh(f"nmcli connection delete '{ssid}'")
+    
+    if pw:
+        cmd = f"nmcli dev wifi connect '{ssid}' password '{pw}'"
+    else:
+        cmd = f"nmcli dev wifi connect '{ssid}'"
+        
+    code, out = sh(cmd)
+    return jsonify({"ok":(code==0), "error":out if code!=0 else ""})
 
 # ----- Threads -----
 for i in (1,2):
